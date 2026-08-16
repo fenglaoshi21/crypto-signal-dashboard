@@ -4,7 +4,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>4H 策略扫描仪表盘</title>
+<title>流动性就是钱 · 4H 放量扫描</title>
 <script>/*!
  * @license
  * TradingView Lightweight Charts™ v4.1.3
@@ -573,7 +573,7 @@ html[data-theme="night"] .theme-toggle .knob {
 
 <!-- Header -->
 <div class="header">
-  <h1>山涧<span class="brand-accent">晨昏</span> · 4H 策略扫描</h1>
+  <h1>山涧<span class="brand-accent">晨昏</span> · 流动性就是钱</h1>
   <div class="status-group">
     <div class="theme-toggle" onclick="toggleTheme()" title="日/夜切换">
       <div class="knob" id="themeKnob">☀</div>
@@ -615,7 +615,7 @@ html[data-theme="night"] .theme-toggle .knob {
           <div class="pane-label">MACD (12,26,9)</div>
         </div>
         <div id="chartRsi" class="chart-pane" style="flex:1">
-          <div class="pane-label">RSI (14) · 阈值35</div>
+          <div class="pane-label">RSI (14)</div>
         </div>
       </div>
     </div>
@@ -718,13 +718,6 @@ function applyChartTheme() {
   if (difSeries) difSeries.applyOptions({ color: p.gold });
   if (deaSeries) deaSeries.applyOptions({ color: currentTheme === 'day' ? '#b8568f' : '#c98fd8' });
   if (rsiSeries) rsiSeries.applyOptions({ color: p.blue });
-  if (rsiThresholdLine) {
-    rsiSeries.removePriceLine(rsiThresholdLine);
-    rsiThresholdLine = rsiSeries.createPriceLine({
-      price: 35, color: p.accent2, lineWidth: 1,
-      lineStyle: 2, axisLabelVisible: true, title: '35'
-    });
-  }
   // 刷新当前K线（成交量柱/柱状图颜色依赖主题）
   if (selectedSymbol) loadChart(selectedSymbol, currentInterval);
 }
@@ -749,12 +742,6 @@ let ema60Series = null;
 let currentInterval = '4h';
 let autoTimer = null;
 let isScanning = false;
-
-// 黑名单
-const BLACKLIST = new Set([
-  'BTCUSDT','ETHUSDT','BNBUSDT','XRPUSDT','SOLUSDT',
-  'ADAUSDT','DOGEUSDT','DOTUSDT','AVAXUSDT'
-]);
 
 // ============================================================
 // 初始化
@@ -874,7 +861,7 @@ async function testPush() {
 // ============================================================
 let chartMacd = null, chartRsi = null;
 let macdHistSeries = null, difSeries = null, deaSeries = null;
-let rsiSeries = null, rsiThresholdLine = null;
+let rsiSeries = null;
 let syncing = false;
 
 function baseChartOptions(showTime) {
@@ -958,10 +945,6 @@ function initChart() {
       color: p.blue, lineWidth: 1,
       priceLineVisible: false, lastValueVisible: true,
       priceFormat: { type: 'price', precision: 2, minMove: 0.01 }
-    });
-    rsiThresholdLine = rsiSeries.createPriceLine({
-      price: 35, color: p.accent2, lineWidth: 1,
-      lineStyle: 2, axisLabelVisible: true, title: '35'
     });
 
     // --- 三图时间轴同步（用时间范围，避免各面板数据起点不同导致错位） ---
@@ -1234,7 +1217,6 @@ async function startScan() {
           && !STABLE.has(s.baseAsset) && !/(UP|DOWN|BULL|BEAR)$/.test(s.baseAsset))
         .map(s => s.symbol);
     }
-    symbols = symbols.filter(s => !BLACKLIST.has(s));
 
     setStatus(`共 ${symbols.length} 个候选标的，开始并发扫描...`);
 
@@ -1248,8 +1230,8 @@ async function startScan() {
       setStatus(`扫描中... ${pct}% (${i + batch.length}/${symbols.length}) | 已找到 ${scanResults.length} 个`);
     }
 
-    // 排序
-    scanResults.sort((a, b) => b.gainPct - a.gainPct);
+    // 按量比排序（流动性最强的排前面）
+    scanResults.sort((a, b) => b.volRatio - a.volRatio);
 
     // 去重并入历史
     saveToHistory(scanResults.map(r => r.symbol));
@@ -1278,61 +1260,33 @@ async function checkSymbol(symbol) {
   try {
     const resp = await fetch(klineUrl(symbol, '4h', 100));
     const data = await resp.json();
-    if (!data || data.length < 60) return null;
+    if (!data || data.length < 10) return null;
 
     const closes = data.map(d => parseFloat(d[4]));
     const opens = data.map(d => parseFloat(d[1]));
-    const highs = data.map(d => parseFloat(d[2]));
-    const lows = data.map(d => parseFloat(d[3]));
+    const volumes = data.map(d => parseFloat(d[5]));
 
     // 倒数第2根 = 信号K线（上一根已收盘）
     const sigIdx = closes.length - 2;
     const sigOpen = opens[sigIdx];
     const sigClose = closes[sigIdx];
+    const sigVol = volumes[sigIdx];
 
-    // 条件1：阳线
+    // 条件1：信号K线为阳线
     if (sigClose <= sigOpen) return null;
 
-    // 条件2：涨幅 > 3%
-    const gainPct = (sigClose - sigOpen) / sigOpen * 100;
-    if (gainPct < 3) return null;
-
-    // 指标计算（排除当前未收盘K线）
-    const histCloses = closes.slice(0, -1);
-
-    // MACD
-    const difArr = calcMACD(histCloses);
-    const dif = difArr[difArr.length - 1];
-    const dea = calcDEA(difArr)[difArr.length - 1];
-
-    // 条件3：MACD金叉
-    if (dif === null || dea === null || dif <= dea) return null;
-
-    // 条件6：DIF相对值 > 1.1%（|DIF|/价格×100，跨币种可比，趋势已展开）
-    if (Math.abs(dif) / sigClose * 100 <= 1.1) return null;
-
-    // RSI
-    const rsiArr = calcRSI(histCloses, 14);
-    const rsi = rsiArr[rsiArr.length - 1];
-
-    // 条件4：RSI > 35
-    if (rsi === null || rsi <= 35) return null;
-
-    // EMA60
-    const ema60Arr = calcEMA(histCloses, 60);
-    const ema60 = ema60Arr[ema60Arr.length - 1];
-
-    // 条件5：价格在EMA60之上
-    if (sigClose <= ema60) return null;
+    // 条件2：成交量 ≥ 前5根K线平均成交量的7倍
+    const prevFive = volumes.slice(sigIdx - 5, sigIdx);
+    const avgVol = prevFive.reduce((a, b) => a + b, 0) / 5;
+    const volRatio = sigVol / avgVol;
+    if (!(volRatio >= 7)) return null;
 
     return {
       symbol,
-      gainPct: Math.round(gainPct * 100) / 100,
-      dif: Math.round(dif * 1e6) / 1e6,
-      dea: Math.round(dea * 1e6) / 1e6,
-      difPct: Math.round(Math.abs(dif) / sigClose * 10000) / 100,
-      rsi: Math.round(rsi * 100) / 100,
-      ema60: Math.round(ema60 * 1e6) / 1e6,
+      volRatio: Math.round(volRatio * 100) / 100,
+      sigVol: sigVol,
+      avgVol: Math.round(avgVol * 100) / 100,
+      gainPct: Math.round((sigClose - sigOpen) / sigOpen * 10000) / 100,
       close: sigClose,
       currentPrice: closes[closes.length - 1]
     };
@@ -1342,35 +1296,11 @@ async function checkSymbol(symbol) {
   }
 }
 
-function calcMACD(closes) {
-  const ema12 = calcEMA(closes, 12);
-  const ema26 = calcEMA(closes, 26);
-  return ema12.map((v, i) => (v !== null && ema26[i] !== null) ? v - ema26[i] : null);
-}
-
-function calcDEA(dif) {
-  return calcEMA(dif.filter(v => v !== null), 9);
-}
-
-function calcRSI(closes, period) {
-  const rsi = new Array(closes.length).fill(null);
-  if (closes.length < period + 1) return rsi;
-  let gains = 0, losses = 0;
-  for (let i = 1; i <= period; i++) {
-    const delta = closes[i] - closes[i - 1];
-    if (delta > 0) gains += delta;
-    else losses -= delta;
-  }
-  let avgGain = gains / period;
-  let avgLoss = losses / period;
-  rsi[period] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
-  for (let i = period + 1; i < closes.length; i++) {
-    const delta = closes[i] - closes[i - 1];
-    avgGain = (avgGain * (period - 1) + (delta > 0 ? delta : 0)) / period;
-    avgLoss = (avgLoss * (period - 1) + (delta < 0 ? -delta : 0)) / period;
-    rsi[i] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
-  }
-  return rsi;
+function fmtVol(v) {
+  if (v >= 1e9) return (v / 1e9).toFixed(2) + 'B';
+  if (v >= 1e6) return (v / 1e6).toFixed(2) + 'M';
+  if (v >= 1e3) return (v / 1e3).toFixed(2) + 'K';
+  return v.toFixed(2);
 }
 
 // ============================================================
@@ -1392,13 +1322,13 @@ function renderResults() {
     <div class="result-card ${selectedSymbol === r.symbol ? 'selected' : ''}" onclick="selectResult('${r.symbol}', ${i})">
       <div class="top-row">
         <span class="sym">${r.symbol.replace('USDT', '/USDT')}</span>
-        <span class="gain">+${r.gainPct}%</span>
+        <span class="gain">×${r.volRatio}</span>
       </div>
       <div class="metrics">
-        <span>RSI: <span class="val">${r.rsi}</span></span>
-        <span>DIF%: <span class="val">${r.difPct}%</span></span>
-        <span>DEA: <span class="val">${r.dea}</span></span>
-        <span>EMA60: <span class="val">${r.ema60}</span></span>
+        <span>量比: <span class="val">${r.volRatio}倍</span></span>
+        <span>信号量: <span class="val">${fmtVol(r.sigVol)}</span></span>
+        <span>前5均量: <span class="val">${fmtVol(r.avgVol)}</span></span>
+        <span>涨幅: <span class="val">+${r.gainPct}%</span></span>
         <span>当前: <span class="val">${formatPrice(r.currentPrice)}</span></span>
       </div>
     </div>
@@ -1539,9 +1469,9 @@ function toggleAuto() {
 async function sendPush(results) {
   try {
     const top5 = results.slice(0, 5);
-    const lines = top5.map((r, i) => `#${i+1} ${r.symbol} 涨幅${r.gainPct}% RSI${r.rsi} DIF%${r.difPct}`);
+    const lines = top5.map((r, i) => `#${i+1} ${r.symbol} 量比${r.volRatio}倍 涨幅${r.gainPct}%`);
     const desp = lines.join('\n') + (results.length > 5 ? `\n\n...共${results.length}个标的` : '');
-    const title = `4H策略扫描: ${results.length}个标的 ${new Date().toLocaleTimeString('zh-CN')}`;
+    const title = `流动性就是钱: ${results.length}个标的 ${new Date().toLocaleTimeString('zh-CN')}`;
 
     await fetch(`https://sctapi.ftqq.com/${config.sendKey}.send`, {
       method: 'POST',
