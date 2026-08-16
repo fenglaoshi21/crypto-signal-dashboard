@@ -765,6 +765,10 @@ function init() {
   initChart();
   testAll();
   loadHistory();
+  const ps = document.getElementById('proxyStatus');
+  ps.title = '点击重新检测线路';
+  ps.style.cursor = 'pointer';
+  ps.onclick = testProxy;
 }
 
 function loadConfig() {
@@ -803,25 +807,42 @@ function testAll() {
   Promise.all([testProxy(), testPush()]);
 }
 
+let apiLine = 'fapi'; // 'fapi' 合约线路(需代理) / 'spot' 现货免代理线路
+
+function klineUrl(symbol, interval, limit) {
+  return apiLine === 'fapi'
+    ? `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`
+    : `https://data-api.binance.vision/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+}
+
+function exchangeInfoUrl() {
+  return apiLine === 'fapi'
+    ? 'https://fapi.binance.com/fapi/v1/exchangeInfo'
+    : 'https://data-api.binance.vision/api/v3/exchangeInfo';
+}
+
 async function testProxy() {
   const el = document.getElementById('proxyStatus');
-  el.innerHTML = '<span class="dot testing"></span> 代理检测中';
+  el.innerHTML = '<span class="dot testing"></span> 线路检测中';
   try {
     const resp = await fetch('https://fapi.binance.com/fapi/v1/ping', { signal: AbortSignal.timeout(3000) });
     if (resp.ok) {
-      el.innerHTML = '<span class="dot ok"></span> 代理正常';
+      apiLine = 'fapi';
+      el.innerHTML = '<span class="dot ok"></span> 合约线路';
       return;
     }
   } catch(e) {}
-  // 直连尝试
+  // 现货免代理线路
   try {
     const resp = await fetch('https://data-api.binance.vision/api/v3/ping', { signal: AbortSignal.timeout(3000) });
     if (resp.ok) {
-      el.innerHTML = '<span class="dot ok"></span> 直连可用';
+      apiLine = 'spot';
+      el.innerHTML = '<span class="dot ok"></span> 现货线路(免代理)';
       return;
     }
   } catch(e) {}
-  el.innerHTML = '<span class="dot fail"></span> 网络不通';
+  apiLine = null;
+  el.innerHTML = '<span class="dot fail"></span> 网络不通，请开启VPN后点击重测';
 }
 
 async function testPush() {
@@ -984,7 +1005,7 @@ async function loadChart(symbol, interval) {
   currentInterval = interval;
 
   try {
-    const resp = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=200`);
+    const resp = await fetch(klineUrl(symbol, interval, 200));
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const data = await resp.json();
     if (!data || !Array.isArray(data) || data.length === 0) {
@@ -1083,7 +1104,7 @@ async function loadChart(symbol, interval) {
   } catch(e) {
     console.error('Chart load error:', e);
     placeholder.style.display = 'flex';
-    placeholder.textContent = 'K线加载失败: ' + (e.message === 'Failed to fetch' ? '网络不通，请确认浏览器已开启系统代理(127.0.0.1:7890)' : e.message);
+    placeholder.textContent = 'K线加载失败: ' + (e.message === 'Failed to fetch' ? '网络不通，请开启VPN，或点击左上角线路状态切换到现货免代理线路' : e.message);
   }
 }
 
@@ -1196,12 +1217,24 @@ async function startScan() {
 
   try {
     // 获取所有交易对
-    const resp = await fetch('https://fapi.binance.com/fapi/v1/exchangeInfo');
+    if (apiLine === null) {
+      throw new Error('网络不通，请先开启VPN或点击线路状态重测');
+    }
+    const resp = await fetch(exchangeInfoUrl());
     const data = await resp.json();
-    let symbols = data.symbols
-      .filter(s => s.quoteAsset === 'USDT' && s.contractType === 'PERPETUAL' && s.status === 'TRADING')
-      .map(s => s.symbol)
-      .filter(s => !BLACKLIST.has(s));
+    let symbols;
+    if (apiLine === 'fapi') {
+      symbols = data.symbols
+        .filter(s => s.quoteAsset === 'USDT' && s.contractType === 'PERPETUAL' && s.status === 'TRADING')
+        .map(s => s.symbol);
+    } else {
+      const STABLE = new Set(['USDC','TUSD','FDUSD','BUSD','DAI','USDP','EURI','EUR','AEUR','XUSD','USDS','PAXG','WBTC','WBETH']);
+      symbols = data.symbols
+        .filter(s => s.quoteAsset === 'USDT' && s.status === 'TRADING'
+          && !STABLE.has(s.baseAsset) && !/(UP|DOWN|BULL|BEAR)$/.test(s.baseAsset))
+        .map(s => s.symbol);
+    }
+    symbols = symbols.filter(s => !BLACKLIST.has(s));
 
     setStatus(`共 ${symbols.length} 个候选标的，开始并发扫描...`);
 
@@ -1243,7 +1276,7 @@ async function startScan() {
 
 async function checkSymbol(symbol) {
   try {
-    const resp = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=4h&limit=100`);
+    const resp = await fetch(klineUrl(symbol, '4h', 100));
     const data = await resp.json();
     if (!data || data.length < 60) return null;
 
