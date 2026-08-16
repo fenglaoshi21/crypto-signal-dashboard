@@ -1293,11 +1293,6 @@ async function checkSymbol(symbol) {
     // 条件1：阳线
     if (sigClose <= sigOpen) return null;
 
-    // 条件1b：前一根也必须是阳线
-    const prevOpen = opens[sigIdx - 1];
-    const prevClose = closes[sigIdx - 1];
-    if (prevClose <= prevOpen) return null;
-
     // 条件2：涨幅 > 3%
     const gainPct = (sigClose - sigOpen) / sigOpen * 100;
     if (gainPct < 3) return null;
@@ -1313,8 +1308,8 @@ async function checkSymbol(symbol) {
     // 条件3：MACD金叉
     if (dif === null || dea === null || dif <= dea) return null;
 
-    // 条件6：DIF绝对值 < 0.0012
-    if (Math.abs(dif) >= 0.0012) return null;
+    // 条件6：DIF相对值 > 1.1%（|DIF|/价格×100，跨币种可比，趋势已展开）
+    if (Math.abs(dif) / sigClose * 100 <= 1.1) return null;
 
     // RSI
     const rsiArr = calcRSI(histCloses, 14);
@@ -1335,6 +1330,7 @@ async function checkSymbol(symbol) {
       gainPct: Math.round(gainPct * 100) / 100,
       dif: Math.round(dif * 1e6) / 1e6,
       dea: Math.round(dea * 1e6) / 1e6,
+      difPct: Math.round(Math.abs(dif) / sigClose * 10000) / 100,
       rsi: Math.round(rsi * 100) / 100,
       ema60: Math.round(ema60 * 1e6) / 1e6,
       close: sigClose,
@@ -1400,7 +1396,7 @@ function renderResults() {
       </div>
       <div class="metrics">
         <span>RSI: <span class="val">${r.rsi}</span></span>
-        <span>DIF: <span class="val">${r.dif}</span></span>
+        <span>DIF%: <span class="val">${r.difPct}%</span></span>
         <span>DEA: <span class="val">${r.dea}</span></span>
         <span>EMA60: <span class="val">${r.ema60}</span></span>
         <span>当前: <span class="val">${formatPrice(r.currentPrice)}</span></span>
@@ -1543,7 +1539,7 @@ function toggleAuto() {
 async function sendPush(results) {
   try {
     const top5 = results.slice(0, 5);
-    const lines = top5.map((r, i) => `#${i+1} ${r.symbol} 涨幅${r.gainPct}% RSI${r.rsi} DIF${r.dif}`);
+    const lines = top5.map((r, i) => `#${i+1} ${r.symbol} 涨幅${r.gainPct}% RSI${r.rsi} DIF%${r.difPct}`);
     const desp = lines.join('\n') + (results.length > 5 ? `\n\n...共${results.length}个标的` : '');
     const title = `4H策略扫描: ${results.length}个标的 ${new Date().toLocaleTimeString('zh-CN')}`;
 
